@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum EmailStatus {
+  SCHEDULED
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  RATE_LIMITED
+}
+
+model User {
+  id        String   @id @default(uuid())
+  googleId  String   @unique
+  email     String   @unique
+  name      String
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  senders   Sender[]
+  campaigns Campaign[]
+  emailJobs EmailJob[]
+  slack     SlackConnection?
+
+  @@index([email])
+}
+
+model Sender {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email      String
+  label      String?
+  // Per-sender override of DEFAULT_MAX_EMAILS_PER_HOUR. Null = use default.
+  maxPerHour Int?
+  createdAt  DateTime @default(now())
+
+  campaigns Campaign[]
+  emailJobs EmailJob[]
+
+  @@unique([userId, email])
+  @@index([userId])
+}
+
+model Campaign {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderId        String
+  sender          Sender   @relation(fields: [senderId], references: [id])
+  subject         String
+  body            String
+  startAt         DateTime
+  delayMs         Int
+  hourlyLimit     Int?
+  totalRecipients Int
+  createdAt       DateTime @default(now())
+
+  emailJobs EmailJob[]
+
+  @@index([userId, createdAt])
+}
+
+model EmailJob {
+  id             String      @id @default(uuid())
+  // sha256(campaignId + ':' + normalizedRecipient) -- see packages/shared/src
+  // for the exact derivation. Doubles as the deterministic BullMQ job id.
+  idempotencyKey String      @unique
+
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  senderId   String
+  sender     Sender   @relation(fields: [senderId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  recipient String
+  subject   String
+  body      String
+
+  scheduledAt DateTime
+  sentAt      DateTime?
+  status      EmailStatus @default(SCHEDULED)
+  attempts    Int         @default(0)
+  failureReason String?
+  bullJobId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([campaignId])
+  @@index([senderId, scheduledAt])
+  @@index([status, scheduledAt])
+}
+
+model SlackConnection {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId    String
+  teamName  String
+  // AES-256-GCM ciphertext (see lib/crypto.ts). Never sent to the frontend.
+  accessTokenEncrypted String
+  channelId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
